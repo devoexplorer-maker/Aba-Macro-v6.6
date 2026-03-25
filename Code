@@ -1,0 +1,1250 @@
+"""
+ABA Macro v6.6 — by DevoExplorer
+"""
+import tkinter as tk
+import tkinter.ttk as ttk
+import threading, time, json, os, sys, ctypes, keyboard, webbrowser
+import pyautogui
+from PIL import ImageGrab
+
+
+user32 = ctypes.windll.user32
+
+def win_press(key, delay=0.06):
+    import keyboard as _kb
+    _kb.press(key); time.sleep(delay); _kb.release(key)
+
+def win_click():
+    import pyautogui as _pg; _pg.click()
+
+def sample(x, y):
+    try: return ImageGrab.grab(bbox=(x,y,x+1,y+1)).getpixel((0,0))[:3]
+    except: return (0,0,0)
+
+def bright(rgb): return (int(rgb[0])+int(rgb[1])+int(rgb[2]))//3
+
+def play_sound(kind="start"):
+    """Play a short Windows beep. Non-blocking."""
+    import winsound
+    try:
+        if kind == "start":
+            threading.Thread(target=lambda: winsound.Beep(800, 150), daemon=True).start()
+        elif kind == "stop":
+            threading.Thread(target=lambda: winsound.Beep(400, 150), daemon=True).start()
+        elif kind == "afk":
+            threading.Thread(target=lambda: (winsound.Beep(600, 100), time.sleep(0.05), winsound.Beep(900, 100)), daemon=True).start()
+        elif kind == "stun":
+            threading.Thread(target=lambda: winsound.Beep(1000, 80), daemon=True).start()
+    except:
+        pass
+
+class ToolTip:
+    """Hover tooltip for any tkinter widget."""
+    def __init__(self, widget, text, delay=800):
+        self.widget = widget; self.text = text; self.delay = delay
+        self.tip = None; self._id = None
+        widget.bind("<Enter>", self._schedule)
+        widget.bind("<Leave>", self._cancel)
+    def _schedule(self, e=None):
+        self._cancel()
+        self._id = self.widget.after(self.delay, self._show)
+    def _cancel(self, e=None):
+        if self._id: self.widget.after_cancel(self._id); self._id = None
+        if self.tip: self.tip.destroy(); self.tip = None
+    def _show(self):
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        lbl = tk.Label(tw, text=self.text, bg="#1a1a24", fg="#cccccc",
+                       font=("Consolas", 8), relief="solid", borderwidth=1,
+                       padx=6, pady=3, wraplength=250, justify="left")
+        lbl.pack()
+
+def cfg_path():
+    base = os.path.dirname(sys.executable) if getattr(sys,'frozen',False) else os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "aba_settings.json")
+
+# ── UI THEMES ──────────────────────────────────────────────────
+THEMES = {
+    "default":      {"BG":"#0d0d0f","CARD":"#16161a","ACC":"#e8384f","ACC2":"#ff6b35","FG":"#f0f0f0","DIM":"#6b6b7a","ENT":"#0a0a0d"},
+    "matrix":       {"BG":"#000d00","CARD":"#001a00","ACC":"#00ff41","ACC2":"#00cc33","FG":"#00ff41","DIM":"#005500","ENT":"#000800"},
+    "frost":        {"BG":"#d0d8e0","CARD":"#e0e8f0","ACC":"#1a7fff","ACC2":"#0a4aaa","FG":"#0a1a2a","DIM":"#4a6a8a","ENT":"#c0ccd8"},
+    "gold":         {"BG":"#0d0a00","CARD":"#1a1400","ACC":"#ffcc00","ACC2":"#ffaa00","FG":"#fff0c0","DIM":"#7a6000","ENT":"#080600"},
+    "void":         {"BG":"#08000d","CARD":"#100018","ACC":"#aa44ff","ACC2":"#cc77ff","FG":"#e8d0ff","DIM":"#5a3a7a","ENT":"#050008"},
+    "cherry":       {"BG":"#e8d8dd","CARD":"#f0e0e8","ACC":"#e0457a","ACC2":"#c0205a","FG":"#2a0a15","DIM":"#9a6a78","ENT":"#dcc8d0"},
+    "lightning":    {"BG":"#080808","CARD":"#111111","ACC":"#00cfff","ACC2":"#66e8ff","FG":"#e8f8ff","DIM":"#3a5a66","ENT":"#050505"},
+    "saka-goat":    {"BG":"#1a0d00","CARD":"#261400","ACC":"#ff6a00","ACC2":"#ff9a3c","FG":"#ffe8cc","DIM":"#7a4a20","ENT":"#140900"},
+    "blood-moon":   {"BG":"#0d0000","CARD":"#1a0505","ACC":"#ff1a1a","ACC2":"#8b0000","FG":"#ffd0d0","DIM":"#6b2a2a","ENT":"#080000"},
+    "ocean":        {"BG":"#000a0d","CARD":"#001520","ACC":"#00bcd4","ACC2":"#0097a7","FG":"#e0f7fa","DIM":"#2a6070","ENT":"#000608"},
+    "neon-pink":    {"BG":"#0d000d","CARD":"#1a0018","ACC":"#ff00ff","ACC2":"#ff66cc","FG":"#ffe0ff","DIM":"#6b2a6b","ENT":"#080008"},
+}
+
+DEFAULTS = {
+    "start_key":"bracketleft", "stop_key":"bracketright", "close_key":"backslash",
+    "use_m1":True, "m1_speed":2, "use_m2":False, "m2_cd":5.0, "auto_jump":False, "auto_mode":True, "auto_move":True,
+    "afk_aim":False, "aim_power":2,
+    "skip_time":7.0,
+    "hold_skills_base":"", "hold_time_base":0,
+    "hold_skills_mode":"", "hold_time_mode":0,
+    "combos":"", "combo_delay":0.5,
+    "anti_afk":False,
+    "afk_play_x":0,"afk_play_y":0,
+    "afk_chars_btn_x":0,"afk_chars_btn_y":0,
+    "afk_next_x":0,"afk_next_y":0,
+    "afk_char_x":0,"afk_char_y":0,
+    "afk_select_x":0,"afk_select_y":0,
+    "afk_char_page":0,
+    "s1x":0,"s1y":0,"s2x":0,"s2y":0,"s3x":0,"s3y":0,"s4x":0,"s4y":0,
+    "modex":0,"modey":0,
+    "ready_thresh":30, "mode_thresh":100,
+    "ui_theme":"default",
+    "sounds_enabled":True, "overlay_opacity":0.88,
+}
+
+def load_cfg():
+    try:
+        with open(cfg_path()) as f:
+            d=json.load(f); o=dict(DEFAULTS); o.update(d); return o
+    except: return dict(DEFAULTS)
+
+def save_cfg(s):
+    try:
+        with open(cfg_path(),"w") as f: json.dump(s,f,indent=2)
+    except: pass
+
+# ── AFK ROTATE ─────────────────────────────────────────────────
+# In shift lock, pressing left/right arrow rotates the camera and character.
+# Speed 1-5 controls how frequently the key is tapped.
+
+# ── ENGINE ─────────────────────────────────────────────────────
+class Engine:
+    def __init__(self):
+        self.running=False; self.log_cb=None; self.status_cb=None; self.cfg=None
+        self.afk_busy=False  # True while Anti-AFK is clicking buttons
+
+    def start(self, cfg):
+        if self.running: return
+        self.cfg=cfg; self.running=True
+        threading.Thread(target=self._afk_loop, daemon=True).start()
+        if cfg.get("sounds_enabled",True): play_sound("start")
+        if cfg.get("s1x",0)==0:
+            self.log("⚠ Calibrate skill pixels first! (SETUP section)")
+        else:
+            threading.Thread(target=self._loop, daemon=True).start()
+        if self.status_cb: self.status_cb(True)
+
+    def stop(self):
+        was_running = self.running
+        self.running=False
+        if was_running and self.cfg and self.cfg.get("sounds_enabled",True): play_sound("stop")
+        if self.status_cb: self.status_cb(False)
+
+    def log(self, m):
+        if self.log_cb: self.log_cb(m)
+
+    def _afk_loop(self):
+        """Anti-AFK v2 — detects ABA menu screen, rejoins game.
+        Works on: title screen (PLAY visible) AND lobby/new-server screen.
+        Click method: glide cursor to button via relative mouse_event, then
+        single mousedown+mouseup. For CHARACTERS toggle: use screen-state
+        detection to ensure panel is open before proceeding."""
+        import ctypes as _ct
+
+        LEFTDOWN = 0x0002
+        LEFTUP   = 0x0004
+
+        class PT(_ct.Structure):
+            _fields_=[("x",_ct.c_long),("y",_ct.c_long)]
+
+        def _focus_roblox():
+            """Bring Roblox to foreground."""
+            try:
+                import subprocess
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0  # SW_HIDE
+                subprocess.run(
+                    ['powershell','-Command',
+                     '(Get-Process -Name RobloxPlayerBeta -ErrorAction SilentlyContinue | Select-Object -First 1).MainWindowHandle | ForEach-Object { [void][System.Runtime.InteropServices.Marshal]::GetLastWin32Error(); Add-Type -Name W -Namespace X -MemberDefinition \'[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);\'; [X.W]::SetForegroundWindow($_) }'],
+                    capture_output=True, timeout=3,
+                    startupinfo=si,
+                    creationflags=0x08000000  # CREATE_NO_WINDOW
+                )
+            except:
+                pass
+            time.sleep(0.3)
+
+        def _glide(x, y):
+            """Smooth relative mouse_event glide from current pos to (x,y).
+            Returns True if cursor ended within 3px of target."""
+            pt=PT(); _ct.windll.user32.GetCursorPos(_ct.byref(pt))
+            tdx = int(x) - pt.x
+            tdy = int(y) - pt.y
+            steps = 45
+            ax, ay = 0.0, 0.0
+            for i in range(1, steps+1):
+                t = i / steps
+                e = t * t * (3 - 2 * t)
+                nx = tdx * e; ny = tdy * e
+                dx = int(nx - ax); dy = int(ny - ay)
+                if dx or dy:
+                    _ct.windll.user32.mouse_event(0x0001, dx, dy, 0, 0)
+                ax = nx; ay = ny
+                time.sleep(0.011)
+            # Correction — close rounding gap
+            pt2=PT(); _ct.windll.user32.GetCursorPos(_ct.byref(pt2))
+            fix_dx = int(x) - pt2.x; fix_dy = int(y) - pt2.y
+            if fix_dx or fix_dy:
+                _ct.windll.user32.mouse_event(0x0001, fix_dx, fix_dy, 0, 0)
+                time.sleep(0.01)
+            # Jitter to prove alive
+            _ct.windll.user32.mouse_event(0x0001, 1, 0, 0, 0)
+            time.sleep(0.008)
+            _ct.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
+            # Verify
+            pt3=PT(); _ct.windll.user32.GetCursorPos(_ct.byref(pt3))
+            return abs(pt3.x - int(x)) <= 3 and abs(pt3.y - int(y)) <= 3
+
+        def _raw_click():
+            """Single click via SendInput at current cursor position."""
+            class _MI(_ct.Structure):
+                _fields_=[("dx",_ct.c_long),("dy",_ct.c_long),
+                          ("mouseData",_ct.c_ulong),("dwFlags",_ct.c_ulong),
+                          ("time",_ct.c_ulong),("dwExtraInfo",_ct.POINTER(_ct.c_ulong))]
+            class _INP(_ct.Structure):
+                _fields_=[("type",_ct.c_ulong),("mi",_MI)]
+            # Mouse down
+            _ct.windll.user32.SendInput(1, _ct.byref(_INP(0, _MI(0,0,0,0x0002,0,None))), _ct.sizeof(_INP))
+            time.sleep(0.12)
+            # Mouse up
+            _ct.windll.user32.SendInput(1, _ct.byref(_INP(0, _MI(0,0,0,0x0004,0,None))), _ct.sizeof(_INP))
+
+        def _click_at(x, y, after=1.0):
+            """Position cursor 80px above, glide to target, single click."""
+            _ct.windll.user32.SetCursorPos(int(x), int(y) - 80)
+            time.sleep(0.2)
+            ok = _glide(x, y)
+            time.sleep(0.1)
+            if not ok:
+                pass  # silently correct
+                _ct.windll.user32.SetCursorPos(int(x), int(y))
+                time.sleep(0.05)
+                _ct.windll.user32.mouse_event(0x0001, 1, 1, 0, 0)
+                time.sleep(0.02)
+                _ct.windll.user32.mouse_event(0x0001, -1, -1, 0, 0)
+                time.sleep(0.1)
+            _raw_click()
+            time.sleep(after)
+
+        def _click_at_toggle(x, y, after=1.0):
+            """Same as _click_at but moves cursor FAR away immediately after click.
+            Prevents any phantom double-click from hitting the same button."""
+            _ct.windll.user32.SetCursorPos(int(x), int(y) - 80)
+            time.sleep(0.2)
+            ok = _glide(x, y)
+            time.sleep(0.1)
+            if not ok:
+                pass  # silently correct
+                _ct.windll.user32.SetCursorPos(int(x), int(y))
+                time.sleep(0.05)
+                _ct.windll.user32.mouse_event(0x0001, 1, 1, 0, 0)
+                time.sleep(0.02)
+                _ct.windll.user32.mouse_event(0x0001, -1, -1, 0, 0)
+                time.sleep(0.1)
+            _raw_click()
+            # Immediately yank cursor away so no phantom second click hits the button
+            time.sleep(0.05)
+            _ct.windll.user32.SetCursorPos(10, 10)
+            time.sleep(after)
+
+        def _is_screen_dark(sw, sh):
+            """Check if center of screen is dark (character panel overlay)."""
+            return bright(sample(sw//2, sh//2)) < 40
+
+        def _is_play_visible(cfg):
+            """Detect the green PLAY button on ABA menu.
+            Samples 20 points across the button area. The button is a wide green rectangle.
+            Points spread wide to catch the green background even if calibrated on the text."""
+            px=cfg.get("afk_play_x",0); py=cfg.get("afk_play_y",0)
+            if px==0: return False
+            hits = 0
+            offsets = [
+                # Horizontal spread across the button (text is center, green is edges)
+                (-60,0),(-45,0),(-30,0),(-15,0),(0,0),(15,0),(30,0),(45,0),(60,0),
+                # Vertical spread (above and below text)
+                (-30,-15),(0,-15),(30,-15),
+                (-30,15),(0,15),(30,15),
+                # Corners of button
+                (-50,-12),(50,-12),(-50,12),(50,12),
+            ]
+            for ox,oy in offsets:
+                c = sample(px+ox, py+oy)
+                # Green: G dominant — covers bright green (0,200,0) and darker greens
+                if c[1]>100 and c[1]>c[0]+30 and c[1]>c[2]+30:
+                    hits += 1
+            return hits >= 10
+
+        # ── MAIN LOOP ──
+        _afk_tick = 0
+        while self.running:
+            try:
+                cfg = self.cfg
+                if not cfg.get("anti_afk", False):
+                    time.sleep(1.0); continue
+
+                missing = [k for k in ["afk_play","afk_chars_btn","afk_char","afk_select"]
+                           if cfg.get(f"{k}_x",0)==0]
+                if missing:
+                    self.log(f"Anti-AFK missing: {', '.join(missing)}")
+                    time.sleep(3.0); continue
+
+                # Only trigger on ABA menu — check for green PLAY button pattern
+                _afk_tick += 1
+                play_found = _is_play_visible(cfg)
+                if _afk_tick % 5 == 0:
+                    self.log(f"AFK scan: play={'YES' if play_found else 'no'}")
+                if not play_found:
+                    time.sleep(1.5); continue
+
+                self.log(">> ABA menu detected — rejoining...")
+                self.afk_busy=True
+                if cfg.get("sounds_enabled",True): play_sound("afk")
+                _focus_roblox()
+                sw=_ct.windll.user32.GetSystemMetrics(0)
+                sh=_ct.windll.user32.GetSystemMetrics(1)
+
+                if not self.running: continue
+
+                # ── STEP 1: PLAY ──────────────────────────────────
+                # Safe to retry — PLAY is a one-way button (not a toggle)
+                self.log(">> Step 1: PLAY")
+                px2=cfg.get("afk_play_x",0); py2=cfg.get("afk_play_y",0)
+                play_done = False
+                for att in range(3):
+                    if not self.running: break
+                    _click_at(px2, py2, after=1.5)
+                    # Wait for PLAY button to disappear (green gone)
+                    t0=time.time()
+                    while time.time()-t0 < 4.0:
+                        if not _is_play_visible(cfg):
+                            play_done=True; break
+                        time.sleep(0.3)
+                    if play_done:
+                        self.log(f"  PLAY clicked! (att {att+1})")
+                        break
+                    self.log(f"  PLAY miss att {att+1}")
+                if not play_done:
+                    self.log("  PLAY failed — will retry next cycle")
+                    self.afk_busy=False
+                    time.sleep(3.0); continue
+                time.sleep(3.0)  # wait for lobby to load
+
+                if not self.running: continue
+
+                # ── STEP 2: CHARACTERS (toggle button — EXACTLY 1 click) ──
+                self.log(">> Step 2: CHARACTERS")
+                cx=cfg.get("afk_chars_btn_x",0); cy=cfg.get("afk_chars_btn_y",0)
+                before_b = bright(sample(sw//2, sh//2))
+
+                # One click — then cursor yanked away to prevent phantom double
+                _click_at_toggle(cx, cy, after=1.5)
+
+                # Check if panel opened (screen gets darker from overlay)
+                after_b = bright(sample(sw//2, sh//2))
+                panel_open = after_b < before_b - 12
+
+                if not panel_open:
+                    # Click didn't register. Try once more.
+                    self.log("  chars didn't open — retry once")
+                    time.sleep(1.5)
+                    before_b2 = bright(sample(sw//2, sh//2))
+                    _click_at_toggle(cx, cy, after=1.5)
+                    after_b2 = bright(sample(sw//2, sh//2))
+                    panel_open = after_b2 < before_b2 - 12
+
+                if not panel_open:
+                    self.log("  chars failed — abort, will retry next cycle")
+                    self.afk_busy=False
+                    time.sleep(3.0); continue
+
+                self.log("  chars panel open!")
+                time.sleep(1.0)
+
+                if not self.running: continue
+
+                # ── STEP 3: NEXT pages (if needed) ────────────────
+                pages = int(cfg.get("afk_char_page",0))
+                if pages > 0:
+                    self.log(f">> Step 3: NEXT x{pages}")
+                    nx2=cfg.get("afk_next_x",0); ny2=cfg.get("afk_next_y",0)
+                    for pg in range(pages):
+                        if not self.running: break
+                        self.log(f"  NEXT {pg+1}/{pages}")
+                        _click_at(nx2, ny2, after=2.0)
+
+                if not self.running: continue
+
+                # ── STEP 4: CHARACTER portrait ────────────────────
+                self.log(">> Step 4: Character")
+                _click_at(cfg.get("afk_char_x",0), cfg.get("afk_char_y",0), after=1.5)
+
+                if not self.running: continue
+
+                # ── STEP 5: SELECT ────────────────────────────────
+                self.log(">> Step 5: SELECT")
+                _click_at(cfg.get("afk_select_x",0), cfg.get("afk_select_y",0), after=1.0)
+
+                self.log(">> Done! Loading into game...")
+                time.sleep(10.0)
+                self.afk_busy=False
+
+            except Exception as e:
+                self.log(f"AFK error: {e}")
+                self.afk_busy=False
+                time.sleep(3.0)
+
+    def _loop(self):
+        cfg = self.cfg
+        thresh = cfg.get("ready_thresh",30)
+        pts = [(cfg["s1x"],cfg["s1y"]),(cfg["s2x"],cfg["s2y"]),
+               (cfg["s3x"],cfg["s3y"]),(cfg["s4x"],cfg["s4y"])]
+        mx,my = cfg["modex"],cfg["modey"]
+
+        self.log("=== STARTED ===")
+        _last_m2 = 0.0
+        for i,(x,y) in enumerate(pts):
+            self.log(f"S{i+1} ({x},{y}) b={bright(sample(x,y))} | thresh={thresh}")
+
+        last_press = [0.0]*4
+        stuck_count = [0]*4
+        skip_until = [0.0]*4
+        MIN_REPRESS = 0.3
+        MAX_STUCK = 2
+        SKIP_TIME = float(cfg.get("skip_time",7.0))
+        tick = 0
+
+        while self.running:
+            now = time.time()
+
+            # Auto Mode (PRESS G) — white pixel at mode bar + not sky
+            if cfg.get("auto_mode",True) and mx > 0:
+                mc = sample(mx, my)
+                if mc[0]>220 and mc[1]>220 and mc[2]>220:
+                    # Sky check — if 30px above is also white, it's sky not PRESS G
+                    sky = sample(mx, my-30)
+                    if not(sky[0]>220 and sky[1]>220 and sky[2]>220):
+                        self.log(">> PRESS G!")
+                        t0=time.time()
+                        while self.running and time.time()-t0<10:
+                            win_press('g',0.07); time.sleep(0.08)
+                            mc2=sample(mx,my)
+                            if not(mc2[0]>220 and mc2[1]>220 and mc2[2]>220):
+                                self.log(">> Awakened!"); time.sleep(0.3); break
+                        continue
+
+            # Skip everything below if Anti-AFK is actively clicking
+            if self.afk_busy:
+                time.sleep(0.1); continue
+
+            # All dark = not in game
+            all_dark = all(bright(sample(x,y))<10 for x,y in pts)
+            if all_dark:
+                time.sleep(1.0); continue
+
+            used = False
+            if cfg.get("auto_move",True):
+                for i,(x,y) in enumerate(pts):
+                    if not self.running: break
+                    b = bright(sample(x,y))
+                    if now < skip_until[i]: continue
+                    if stuck_count[i] >= MAX_STUCK:
+                        skip_until[i]=now+SKIP_TIME; stuck_count[i]=0; continue
+                    just_pressed = (now-last_press[i]) < MIN_REPRESS
+                    if b>thresh and not just_pressed:
+                        # Fire M2 first if enabled and CD elapsed
+                        if cfg.get("use_m2",False) and i==0:
+                            m2_cd = float(cfg.get("m2_cd",5.0))
+                            if now - _last_m2 >= m2_cd:
+                                import pyautogui as _pag
+                                _pag.click(button="right")
+                                time.sleep(0.1)
+                                _last_m2 = now
+                        key = str(i+1)
+                        base_holds = [x.strip() for x in str(cfg.get("hold_skills_base","")).split(",") if x.strip()]
+                        mode_holds = [x.strip() for x in str(cfg.get("hold_skills_mode","")).split(",") if x.strip()]
+                        base_wait  = int(cfg.get("hold_time_base",0))
+                        mode_wait  = int(cfg.get("hold_time_mode",0))
+                        wait=0
+                        if key in base_holds and base_wait>0: wait=base_wait
+                        elif key in mode_holds and mode_wait>0: wait=mode_wait
+                        win_press(key)
+                        if wait>0:
+                            self.log(f"Skill {i+1} — holding {wait}s"); time.sleep(wait)
+                        # Combos
+                        combos_raw = str(cfg.get("combos",""))
+                        cdel = float(cfg.get("combo_delay",0.5))
+                        for combo in combos_raw.split(";"):
+                            combo=combo.strip()
+                            if not combo or ":" not in combo: continue
+                            trigger,chain=combo.split(":",1)
+                            if trigger.strip()==key:
+                                for ck in chain.split(","):
+                                    ck=ck.strip()
+                                    if ck: time.sleep(cdel); win_press(ck); self.log(f"  Combo: {ck}")
+                        self.log(f"Skill {i+1} b={b}")
+                        last_press[i]=now; stuck_count[i]+=1
+                        time.sleep(0.12); used=True; break
+
+            # Reset stuck when skill cools
+            for i,(x,y) in enumerate(pts):
+                if bright(sample(x,y))<thresh and now>=skip_until[i]:
+                    stuck_count[i]=0
+
+            if not used and self.running and not self.afk_busy:
+                if cfg.get("use_m1",True):
+                    m1_speed = int(cfg.get("m1_speed", 2))
+                    if m1_speed >= 3:
+                        # Speed 3 = rapid burst of 5 clicks
+                        import ctypes as _ctm1
+                        for _ in range(5):
+                            _ctm1.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
+                            time.sleep(0.02)
+                            _ctm1.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
+                            time.sleep(0.01)
+                    elif m1_speed == 2:
+                        # Speed 2 = triple click
+                        for _ in range(3):
+                            win_click(); time.sleep(0.015)
+                    else:
+                        win_click()
+                if cfg.get("auto_jump",False):
+                    import keyboard as _kb
+                    _kb.press("space"); time.sleep(0.05); _kb.release("space")
+
+            # AFK Rotate — spin camera (shift lock) via mouse_event
+            if cfg.get("afk_aim",False) and not self.afk_busy:
+                import ctypes as _ctr
+                rotate_speed = cfg.get("aim_power", 2)
+                if rotate_speed >= 5:
+                    for _ in range(20):
+                        _ctr.windll.user32.mouse_event(0x0001, 25, 0, 0, 0)
+                        time.sleep(0.002)
+                else:
+                    # Speed 1=25, 2=50, 3=80, 4=110
+                    dx = [25, 50, 80, 110][min(rotate_speed, 4) - 1]
+                    _ctr.windll.user32.mouse_event(0x0001, dx, 0, 0, 0)
+
+            tick+=1
+            if tick%60==0:
+                for i,(x,y) in enumerate(pts):
+                    b=bright(sample(x,y))
+                    self.log(f"  S{i+1} b={b} {'RDY' if b>thresh else 'CD'}")
+
+            time.sleep(0.03)
+        self.log("=== STOPPED ===")
+
+
+# ── APP ────────────────────────────────────────────────────────
+class App(tk.Tk):
+    BG="#0d0d0f"; CARD="#16161a"; ACC="#e8384f"; ACC2="#ff6b35"
+    FG="#f0f0f0"; DIM="#6b6b7a"; ENT="#0a0a0d"
+
+    def _apply_theme(self, name):
+        t=THEMES.get(name,THEMES["default"])
+        self.BG=t["BG"]; self.CARD=t["CARD"]; self.ACC=t["ACC"]
+        self.ACC2=t["ACC2"]; self.FG=t["FG"]; self.DIM=t["DIM"]; self.ENT=t["ENT"]
+
+    def __init__(self):
+        super().__init__()
+        self.cfg=load_cfg()
+        self._apply_theme(self.cfg.get("ui_theme","default"))
+        self.eng=Engine()
+        self.eng.log_cb=self._log; self.eng.status_cb=self._set_status
+        self._lv=self._ll=self._lk=self._kh=None
+        self._picking=False; self._pick_target=None
+        self._log_lines=[]
+        self.title("ABA Macro v6.6")
+        self.resizable(True,True)
+        self.configure(bg=self.BG)
+        self.protocol("WM_DELETE_WINDOW",self._close)
+        self.geometry("380x560")
+        self._center(); self._build(); self._rebind()
+        self.bind("<Button-1>",self._cancel)
+        # Click anywhere on background unfocuses text fields
+        self.bind_all("<Button-1>", self._unfocus, add="+")
+
+    def _unfocus(self, event):
+        """Release focus from Entry/Spinbox when clicking elsewhere."""
+        w = event.widget
+        if not isinstance(w, (tk.Entry, tk.Spinbox, ttk.Combobox)):
+            self.focus_set()
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            self._log("⚠ Not admin — hotkeys may fail. Run as Administrator.")
+        if self.cfg["s1x"]==0:
+            self._log("⚠ Not calibrated! Use SETUP section below.")
+
+    def _center(self):
+        self.update_idletasks()
+        x=(self.winfo_screenwidth()-420)//2; y=(self.winfo_screenheight()-560)//2
+        self.geometry(f"380x560+{x}+{y}")
+
+    def _build(self):
+        B,C,A,A2,F,D=self.BG,self.CARD,self.ACC,self.ACC2,self.FG,self.DIM
+
+        # Header
+        hdr=tk.Frame(self,bg=B); hdr.pack(fill="x",padx=20,pady=(14,0))
+        ico=tk.Label(hdr,text="⚔",bg=B,fg=A,font=("Consolas",20))
+        ico.pack(side="left")
+        self._title_lbl=tk.Label(hdr,text=" ABA MACRO",bg=B,fg=F,font=("Consolas",16,"bold"))
+        self._title_lbl.pack(side="left")
+        # Log toggle button — top right, small animated icon
+        self._log_canvas=tk.Canvas(hdr,width=18,height=16,bg=B,highlightthickness=0,cursor="hand2")
+        self._log_canvas.pack(side="right",padx=(0,2))
+        self._log_icon_open=False
+        def _draw_log_icon(hovered=False):
+            c=self._log_canvas; c.delete("all")
+            col=self.ACC if hovered else self.DIM
+            if not self._log_icon_open:
+                # Three horizontal lines (hamburger)
+                for y in [4, 8, 12]:
+                    c.create_line(2, y, 16, y, fill=col, width=1.5)
+            else:
+                # Down arrow (log open)
+                c.create_line(3, 5, 9, 12, fill=col, width=1.5)
+                c.create_line(15, 5, 9, 12, fill=col, width=1.5)
+        _draw_log_icon()
+        self._draw_log_icon=_draw_log_icon
+        self._log_canvas.bind("<Button-1>",lambda e:self._toggle_log())
+        self._log_canvas.bind("<Enter>",lambda e:_draw_log_icon(True))
+        self._log_canvas.bind("<Leave>",lambda e:_draw_log_icon(False))
+        ToolTip(self._log_canvas,"Show/hide full log output")
+        self._sub_lbl=tk.Label(self,text="Anime Battle Arena Automation  •  by DevoExplorer  v6.6",bg=B,fg=D,font=("Consolas",8))
+        self._sub_lbl.pack(pady=(2,0))
+        social=tk.Frame(self,bg=B); social.pack(pady=(2,6))
+
+        # YouTube logo canvas - rounded rectangle
+        ytc=tk.Canvas(social,width=34,height=24,bg=B,highlightthickness=0,cursor="hand2")
+        ytc.pack(side="left",padx=5)
+        def _yt_draw(col):
+            ytc.delete("all")
+            r=5  # corner radius
+            x1,y1,x2,y2=1,1,33,23
+            # Rounded rect via overlapping shapes
+            ytc.create_arc(x1,y1,x1+r*2,y1+r*2,start=90,extent=90,fill=col,outline=col)
+            ytc.create_arc(x2-r*2,y1,x2,y1+r*2,start=0,extent=90,fill=col,outline=col)
+            ytc.create_arc(x1,y2-r*2,x1+r*2,y2,start=180,extent=90,fill=col,outline=col)
+            ytc.create_arc(x2-r*2,y2-r*2,x2,y2,start=270,extent=90,fill=col,outline=col)
+            ytc.create_rectangle(x1+r,y1,x2-r,y2,fill=col,outline=col)
+            ytc.create_rectangle(x1,y1+r,x2,y2-r,fill=col,outline=col)
+            # Play triangle
+            ytc.create_polygon(13,7,13,17,23,12,fill="white")
+        _yt_draw("#550000")
+        ytc.bind("<Enter>",lambda e:_yt_draw("#ff0000"))
+        ytc.bind("<Leave>",lambda e:_yt_draw("#550000"))
+        ytc.bind("<Button-1>",lambda e:webbrowser.open("https://youtube.com/@devexplorer-k6f?si=XOZR8DrhbG0Oa_yv"))
+
+        # Discord logo canvas
+        dcc=tk.Canvas(social,width=26,height=22,bg=B,highlightthickness=0,cursor="hand2")
+        dcc.pack(side="left",padx=5)
+        def _dc_draw(col):
+            dcc.delete("all")
+            dcc.create_arc(1,1,25,21,start=0,extent=180,fill=col,outline="")
+            dcc.create_rectangle(1,11,25,17,fill=col,outline="")
+            dcc.create_arc(1,9,9,21,start=180,extent=180,fill=col,outline="")
+            dcc.create_arc(17,9,25,21,start=180,extent=180,fill=col,outline="")
+            dcc.create_oval(6,7,11,12,fill="white",outline="")
+            dcc.create_oval(15,7,20,12,fill="white",outline="")
+        _dc_draw("#1e2060")
+        dcc.bind("<Enter>",lambda e:_dc_draw("#5865F2"))
+        dcc.bind("<Leave>",lambda e:_dc_draw("#1e2060"))
+        dcc.bind("<Button-1>",lambda e:webbrowser.open("https://discord.gg/TsBDySsJ9v"))
+
+        # Status bar
+        sc=tk.Frame(self,bg=C); sc.pack(fill="x",padx=20,pady=(0,6))
+        si=tk.Frame(sc,bg=C); si.pack(fill="x",padx=14,pady=8)
+        self._dot=tk.Label(si,text="●",bg=C,fg="#2a2a35",font=("Consolas",16)); self._dot.pack(side="left")
+        self._slbl=tk.Label(si,text="  OFFLINE",bg=C,fg=D,font=("Consolas",12,"bold")); self._slbl.pack(side="left")
+        self._overlay=None
+        self._btn=tk.Button(si,text="START",bg=A,fg="white",font=("Consolas",10,"bold"),
+                            relief="flat",padx=14,pady=5,cursor="hand2",
+                            activebackground="#c0202f",command=self._toggle)
+        self._btn.pack(side="right")
+
+        # ── LOG PANEL (hidden by default) ──
+        from tkinter import scrolledtext as _st
+        self._log_panel=_st.ScrolledText(self,bg="#0a0a0d",fg=A2,font=("Consolas",7),height=6,
+            relief="flat",highlightthickness=1,highlightbackground="#1a1a24",state="disabled")
+        self._log_panel_visible=False
+
+        # ── HOTKEYS (collapsible) ──
+        self._vars={}
+        hk_hdr=tk.Frame(self,bg=B); hk_hdr.pack(fill="x",padx=20,pady=(4,0))
+        self._hk_open=tk.BooleanVar(value=False)
+        self._hk_btn=tk.Label(hk_hdr,text="▶ HOTKEYS  (click to expand)",bg=B,fg=D,font=("Consolas",8,"bold"),cursor="hand2")
+        self._hk_btn.pack(anchor="w"); self._hk_btn.bind("<Button-1>",self._toggle_hk)
+        hc=tk.Frame(self,bg=C); hc.pack(fill="x",padx=20,pady=(0,6))
+        self._hk_frame=hc; hc.pack_forget()
+        hi=tk.Frame(hc,bg=C); hi.pack(fill="x",padx=14,pady=6)
+        for lbl,key in [("Start","start_key"),("Stop","stop_key"),("Force Close","close_key")]:
+            self._row(hi,lbl,key)
+
+        # ── OPTIONS (collapsible) ──
+        op_hdr=tk.Frame(self,bg=B); op_hdr.pack(fill="x",padx=20,pady=(4,0))
+        self._op_open=tk.BooleanVar(value=False)
+        self._op_btn=tk.Label(op_hdr,text="▶ OPTIONS  (click to expand)",bg=B,fg=D,font=("Consolas",8,"bold"),cursor="hand2")
+        self._op_btn.pack(anchor="w"); self._op_btn.bind("<Button-1>",self._toggle_opts)
+        op=tk.Frame(self,bg=C); op.pack(fill="x",padx=20,pady=(0,6))
+        self._op_frame=op; op.pack_forget()
+        mf=tk.Frame(op,bg=C); mf.pack(fill="x",padx=14,pady=6)
+
+        # Checkboxes
+        self._m1=tk.BooleanVar(value=self.cfg.get("use_m1",True))
+        m1f=tk.Frame(mf,bg=C); m1f.pack(anchor="w",fill="x")
+        _cb_m1=tk.Checkbutton(m1f,text="Auto M1 (left click between skills)",variable=self._m1,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_m1.pack(side="left"); ToolTip(_cb_m1,"Automatically left-clicks between skill presses. Speed 1=tap, 2=double tap, 3=hold click")
+        tk.Label(m1f,text="Speed:",bg=C,fg=D,font=("Consolas",8)).pack(side="left",padx=(8,2))
+        self._m1_speed=tk.IntVar(value=self.cfg.get("m1_speed",2))
+        tk.Spinbox(m1f,from_=1,to=3,increment=1,textvariable=self._m1_speed,width=2,bg=self.ENT,fg=self.FG,font=("Consolas",8),relief="flat",buttonbackground=self.ENT).pack(side="left")
+        tk.Label(m1f,text="(3=hold)",bg=C,fg=A2,font=("Consolas",7)).pack(side="left",padx=(4,0))
+        self._m2=tk.BooleanVar(value=self.cfg.get("use_m2",False))
+        m2f=tk.Frame(mf,bg=C); m2f.pack(anchor="w",fill="x")
+        _cb_m2=tk.Checkbutton(m2f,text="Auto M2 (right click before skills)",variable=self._m2,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_m2.pack(side="left"); ToolTip(_cb_m2,"Right-clicks before firing Skill 1, on a cooldown timer")
+        tk.Label(m2f,text="CD:",bg=C,fg=D,font=("Consolas",8)).pack(side="left",padx=(8,2))
+        self._m2_cd=tk.DoubleVar(value=self.cfg.get("m2_cd",5.0))
+        tk.Spinbox(m2f,from_=0.5,to=30.0,increment=0.5,textvariable=self._m2_cd,width=4,bg=self.ENT,fg=self.FG,font=("Consolas",8),relief="flat",buttonbackground=self.ENT).pack(side="left")
+        tk.Label(m2f,text="s",bg=C,fg=D,font=("Consolas",8)).pack(side="left",padx=(2,0))
+        self._jump=tk.BooleanVar(value=self.cfg.get("auto_jump",False))
+        _cb_jp=tk.Checkbutton(mf,text="Auto Jump (space between skills)",variable=self._jump,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_jp.pack(anchor="w"); ToolTip(_cb_jp,"Presses space between skills to stay mobile")
+        self._automove=tk.BooleanVar(value=self.cfg.get("auto_move",True))
+        _cb_mv=tk.Checkbutton(mf,text="Auto Move (fire skills when ready)",variable=self._automove,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_mv.pack(anchor="w"); ToolTip(_cb_mv,"Presses skill keys (1-4) when pixel brightness shows they're off cooldown")
+        self._automode=tk.BooleanVar(value=self.cfg.get("auto_mode",True))
+        _cb_am=tk.Checkbutton(mf,text="Auto Mode (spam G when PRESS G appears)",variable=self._automode,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_am.pack(anchor="w"); ToolTip(_cb_am,"Detects the white PRESS G text on mode bar and spams G to activate mode")
+        self._sounds=tk.BooleanVar(value=self.cfg.get("sounds_enabled",True))
+        _cb_snd=tk.Checkbutton(mf,text="Status Sounds (beep on start/stop/AFK)",variable=self._sounds,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_snd.pack(anchor="w"); ToolTip(_cb_snd,"Plays a short beep when macro starts, stops, or Anti-AFK triggers")
+
+        # AFK Rotate
+        self._afkAim=tk.BooleanVar(value=self.cfg.get("afk_aim",False))
+        _cb_aim=tk.Checkbutton(mf,text="AFK Rotate (spin camera in shift lock)",variable=self._afkAim,bg=C,fg=D,selectcolor=self.ENT,activebackground=C,font=("Consolas",8),highlightthickness=0)
+        _cb_aim.pack(anchor="w"); ToolTip(_cb_aim,"Taps the right arrow key to continuously rotate your camera in shift lock — makes you harder to hit while AFK")
+        pf=tk.Frame(mf,bg=C); pf.pack(anchor="w",padx=(18,0),pady=(1,4))
+        tk.Label(pf,text="Speed (1-5):",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+        self._aim_power=tk.IntVar(value=self.cfg.get("aim_power",2))
+        tk.Spinbox(pf,from_=1,to=5,increment=1,textvariable=self._aim_power,width=3,bg=self.ENT,fg=F,font=("Consolas",9),relief="flat",highlightthickness=1,highlightbackground="#2a2a35",buttonbackground="#1a1a24").pack(side="left",padx=4)
+        tk.Label(pf,text="higher = faster spin",bg=C,fg=A2,font=("Consolas",7)).pack(side="left")
+
+        tk.Frame(mf,bg="#2a2a35",height=1).pack(fill="x",pady=(4,6))
+
+        # Channel skills
+        tk.Label(mf,text="Channel skills (press & wait):",bg=C,fg=D,font=("Consolas",8)).pack(anchor="w")
+        SOPTS=["None","1","2","3","4"]
+        def skill_row(lbl,sv,tv):
+            r=tk.Frame(mf,bg=C); r.pack(anchor="w",pady=2)
+            tk.Label(r,text=lbl,bg=C,fg=D,font=("Consolas",8),width=12,anchor="w").pack(side="left")
+            ttk.Combobox(r,textvariable=sv,values=SOPTS,width=6,font=("Consolas",8),state="readonly").pack(side="left",padx=4)
+            tk.Label(r,text="wait",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+            tk.Spinbox(r,values=list(range(0,5)),textvariable=tv,width=3,bg=self.ENT,fg=F,font=("Consolas",9),relief="flat",highlightthickness=1,highlightbackground="#2a2a35",buttonbackground="#1a1a24").pack(side="left",padx=4)
+            tk.Label(r,text="secs",bg=C,fg=D,font=("Consolas",7)).pack(side="left")
+        self._hold_skills_base=tk.StringVar(value=self.cfg.get("hold_skills_base","None"))
+        self._hold_time_base=tk.IntVar(value=self.cfg.get("hold_time_base",0))
+        skill_row("Base skill:",self._hold_skills_base,self._hold_time_base)
+        self._hold_skills_mode=tk.StringVar(value=self.cfg.get("hold_skills_mode","None"))
+        self._hold_time_mode=tk.IntVar(value=self.cfg.get("hold_time_mode",0))
+        skill_row("Mode skill:",self._hold_skills_mode,self._hold_time_mode)
+
+        tk.Frame(mf,bg="#2a2a35",height=1).pack(fill="x",pady=(4,6))
+
+        # Skill combos
+        tk.Label(mf,text="Skill combos (e.g. 1:1,2 = after 1 → press 1,2):",bg=C,fg=D,font=("Consolas",8)).pack(anchor="w")
+        tk.Label(mf,text="Multiple: 1:1,2;3:3,4   separator = ;",bg=C,fg="#666680",font=("Consolas",7)).pack(anchor="w")
+        self._combos=tk.StringVar(value=self.cfg.get("combos",""))
+        tk.Entry(mf,textvariable=self._combos,bg=self.ENT,fg=F,font=("Consolas",9),width=26,relief="flat",highlightthickness=1,highlightbackground="#2a2a35").pack(anchor="w",pady=(2,0))
+        df=tk.Frame(mf,bg=C); df.pack(anchor="w",pady=(2,0))
+        tk.Label(df,text="Step delay:",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+        self._combo_delay=tk.StringVar(value=str(self.cfg.get("combo_delay",0.5)))
+        tk.Spinbox(df,from_=0.1,to=3.0,increment=0.1,textvariable=self._combo_delay,width=4,bg=self.ENT,fg=F,font=("Consolas",9),relief="flat",highlightthickness=1,highlightbackground="#2a2a35",buttonbackground="#1a1a24").pack(side="left",padx=4)
+        tk.Label(df,text="secs",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+
+        tk.Frame(mf,bg="#2a2a35",height=1).pack(fill="x",pady=(4,6))
+
+        # Failed move skip
+        self._skip_time=tk.StringVar(value=str(self.cfg.get("skip_time",7.0)))
+        sf2=tk.Frame(mf,bg=C); sf2.pack(anchor="w")
+        tk.Label(sf2,text="Failed move skip:",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+        tk.Spinbox(sf2,from_=1,to=30,increment=1,textvariable=self._skip_time,width=4,bg=self.ENT,fg=F,font=("Consolas",9),relief="flat",highlightthickness=1,highlightbackground="#2a2a35",buttonbackground="#1a1a24").pack(side="left",padx=4)
+        tk.Label(sf2,text="secs",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+
+        # ── ANTI-AFK (collapsible) ──
+        self._pix_labels={}
+        afk_hdr=tk.Frame(self,bg=B); afk_hdr.pack(fill="x",padx=20,pady=(4,0))
+        self._afk_sec_open=tk.BooleanVar(value=False)
+        self._afk_sec_btn=tk.Label(afk_hdr,text="▶ ANTI-AFK  (click to expand)",bg=B,fg=D,font=("Consolas",8,"bold"),cursor="hand2")
+        self._afk_sec_btn.pack(anchor="w"); self._afk_sec_btn.bind("<Button-1>",self._toggle_afk_sec)
+        self._afk_sec_frame=tk.Frame(self,bg=B)
+        afki=tk.Frame(self._afk_sec_frame,bg=B); afki.pack(fill="x",padx=34,pady=4)
+
+        self._anti_afk=tk.BooleanVar(value=self.cfg.get("anti_afk",False))
+        _cb_afk=tk.Checkbutton(afki,text="Enable Anti-AFK",variable=self._anti_afk,bg=B,fg=F,selectcolor=self.ENT,activebackground=B,font=("Consolas",9,"bold"),highlightthickness=0)
+        _cb_afk.pack(anchor="w",pady=(0,4)); ToolTip(_cb_afk,"Auto-detects the ABA title screen and rejoins by clicking PLAY → CHARACTERS → SELECT")
+        tk.Label(afki,text="Detects the PLAY button green color — only fires on title screen.",bg=B,fg=D,font=("Consolas",7),justify="left").pack(anchor="w",pady=(0,6))
+
+        for txt in [
+            "1. Title screen → set point on the green PLAY button",
+            "2. In-game → set point on the CHARACTERS button",
+            "3. Char select → set point on the NEXT button",
+            "4. Set point on YOUR CHARACTER portrait",
+            "5. Set point on the SELECT button",
+        ]:
+            tk.Label(afki,text=txt,bg=B,fg=A2 if txt[0].isdigit() else D,font=("Consolas",7),justify="left").pack(anchor="w")
+
+        tk.Frame(afki,bg="#2a2a35",height=1).pack(fill="x",pady=6)
+
+        for key,label in [
+            ("afk_play",     "1. PLAY button"),
+            ("afk_chars_btn","2. CHARACTERS button"),
+            ("afk_next",     "3. NEXT button"),
+            ("afk_char",     "4. Your character"),
+            ("afk_select",   "5. SELECT button"),
+        ]:
+            r=tk.Frame(afki,bg=B); r.pack(fill="x",pady=2)
+            tk.Button(r,text=f"Set {label}",bg="#1a1a24",fg=A,font=("Consolas",8),relief="flat",padx=8,pady=3,cursor="hand2",activebackground="#252535",command=lambda k=key:self._pick(k)).pack(side="left")
+            x=self.cfg.get(f"{key}_x",0); y=self.cfg.get(f"{key}_y",0)
+            lbl=tk.Label(r,text="not set" if x==0 else f"({x},{y})",bg=B,fg=self.ACC if x!=0 else D,font=("Consolas",8))
+            lbl.pack(side="left",padx=8); self._pix_labels[key]=lbl
+
+        pr=tk.Frame(afki,bg=B); pr.pack(anchor="w",pady=(6,0))
+        tk.Label(pr,text="Click NEXT",bg=B,fg=D,font=("Consolas",8)).pack(side="left")
+        self._afk_page=tk.IntVar(value=self.cfg.get("afk_char_page",0))
+        tk.Spinbox(pr,from_=0,to=2,increment=1,textvariable=self._afk_page,width=3,bg=self.ENT,fg=F,font=("Consolas",9),relief="flat",highlightthickness=1,highlightbackground="#2a2a35",buttonbackground="#1a1a24").pack(side="left",padx=4)
+        tk.Label(pr,text="times (0 = page 1)",bg=B,fg=D,font=("Consolas",7)).pack(side="left")
+
+        # Test click button
+        _test_btn=tk.Button(afki,text="▶ Test Click Sequence",bg="#1a1a24",fg=A2,font=("Consolas",8,"bold"),relief="flat",padx=10,pady=4,cursor="hand2",activebackground="#252535",command=self._test_afk_clicks)
+        _test_btn.pack(anchor="w",pady=(8,2))
+        ToolTip(_test_btn,"Clicks each calibrated position one at a time with 2s pauses so you can verify they're in the right spot")
+
+        # ── SETUP (collapsible) ──
+        su_hdr=tk.Frame(self,bg=B); su_hdr.pack(fill="x",padx=20,pady=(4,0))
+        self._setup_open=tk.BooleanVar(value=False)
+        self._setup_toggle_btn=tk.Label(su_hdr,text="▶ SETUP  (click to expand)",bg=B,fg=D,font=("Consolas",8,"bold"),cursor="hand2")
+        self._setup_toggle_btn.pack(anchor="w"); self._setup_toggle_btn.bind("<Button-1>",self._toggle_setup)
+        cal=tk.Frame(self,bg=C); cal.pack(fill="x",padx=20,pady=(0,6))
+        self._setup_frame=cal; cal.pack_forget()
+        ci=tk.Frame(cal,bg=C); ci.pack(fill="x",padx=14,pady=8)
+        tk.Label(ci,text="HOW TO CALIBRATE:\n1. Open ABA Training Mode — skills fully ready\n2. Click Set — 3 second countdown\n3. Hover over BOTTOM-RIGHT corner of skill box\n   Ready=b37-40  Cooldown=b14  Fires when b>30\n4. For Mode Bar: hover on PRESS G text\n5. For Anti-AFK: hover on center of green PLAY button\n6. Save Settings when all green",bg=C,fg=D,font=("Consolas",8),justify="left").pack(anchor="w",pady=(0,6))
+        for key,label in [("s1","Skill 1"),("s2","Skill 2"),("s3","Skill 3"),("s4","Skill 4"),("mode","Mode Bar (PRESS G text)")]:
+            r=tk.Frame(ci,bg=C); r.pack(fill="x",pady=2)
+            tk.Button(r,text=f"Set {label}",bg="#1a1a24",fg=A2,font=("Consolas",8),relief="flat",padx=8,pady=3,cursor="hand2",activebackground="#252535",command=lambda k=key:self._pick(k)).pack(side="left")
+            x=self.cfg.get(f"{key}x",0); y=self.cfg.get(f"{key}y",0)
+            lbl=tk.Label(r,text="not set" if x==0 else f"({x},{y})",bg=C,fg=self.ACC if x!=0 else D,font=("Consolas",8))
+            lbl.pack(side="left",padx=8); self._pix_labels[key]=lbl
+
+
+        # Threshold
+        tf=tk.Frame(ci,bg=C); tf.pack(fill="x",pady=(6,0))
+        tk.Label(tf,text="Ready threshold:",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+        self._thresh=tk.StringVar(value=str(self.cfg.get("ready_thresh",30)))
+        tk.Entry(tf,textvariable=self._thresh,bg=self.ENT,fg=F,font=("Consolas",9),width=5,relief="flat",highlightthickness=1,highlightbackground="#2a2a35").pack(side="left",padx=4)
+        tk.Button(tf,text="Auto-detect",bg="#1a1a24",fg=A2,font=("Consolas",8),relief="flat",padx=6,pady=2,cursor="hand2",command=self._auto_thresh).pack(side="left",padx=4)
+
+        # Save + Export/Import + Status
+        save_row=tk.Frame(self,bg=B); save_row.pack(pady=(2,2))
+        tk.Button(save_row,text="SAVE",bg="#1a1a24",fg=A2,font=("Consolas",9,"bold"),relief="flat",padx=14,pady=4,cursor="hand2",activebackground="#252535",command=self._save).pack(side="left",padx=2)
+        tk.Button(save_row,text="Export",bg="#1a1a24",fg=D,font=("Consolas",8),relief="flat",padx=8,pady=4,cursor="hand2",activebackground="#252535",command=self._export_cfg).pack(side="left",padx=2)
+        tk.Button(save_row,text="Import",bg="#1a1a24",fg=D,font=("Consolas",8),relief="flat",padx=8,pady=4,cursor="hand2",activebackground="#252535",command=self._import_cfg).pack(side="left",padx=2)
+        # Session timer + status
+        stat_row=tk.Frame(self,bg=B); stat_row.pack(fill="x",padx=20,pady=(0,4))
+        self._session_lbl=tk.Label(stat_row,text="",bg=B,fg=D,font=("Consolas",8))
+        self._session_lbl.pack(side="left")
+        self._status_line=tk.Label(stat_row,text="",bg=B,fg=self.ACC,font=("Consolas",8))
+        self._status_line.pack(side="right")
+        self._session_start=None
+        self._tick_session()
+
+        # ── THEME / OVERLAY BAR ──
+        tb=tk.Frame(self,bg=C); tb.pack(fill="x",padx=20,pady=(2,4))
+        tbi=tk.Frame(tb,bg=C); tbi.pack(fill="x",padx=10,pady=6)
+        # Theme picker
+        tk.Label(tbi,text="Theme:",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+        self._theme_var=tk.StringVar(value=self.cfg.get("ui_theme","default"))
+        _tm=ttk.Combobox(tbi,textvariable=self._theme_var,values=["default","matrix","frost","gold","void","cherry","lightning","saka-goat","blood-moon","ocean","neon-pink"],width=10,state="readonly",font=("Consolas",8))
+        _tm.pack(side="left",padx=(4,10)); _tm.bind("<<ComboboxSelected>>",self._change_theme)
+        # Overlay button
+        self._overlay_btn=tk.Button(tbi,text="⬡ Overlay",bg=self.ACC,fg="white",font=("Consolas",7,"bold"),relief="flat",padx=8,pady=2,cursor="hand2",command=self._toggle_overlay)
+        self._overlay_btn.pack(side="left",padx=(0,8))
+        ToolTip(self._overlay_btn,"Toggle a small always-on-top HUD showing macro status")
+        # Overlay opacity
+        tk.Label(tbi,text="Opacity:",bg=C,fg=D,font=("Consolas",8)).pack(side="left")
+        self._ov_opacity=tk.DoubleVar(value=self.cfg.get("overlay_opacity",0.88))
+        tk.Scale(tbi,from_=0.3,to=1.0,resolution=0.05,orient="horizontal",variable=self._ov_opacity,
+                 bg=C,fg=D,troughcolor=self.ENT,highlightthickness=0,font=("Consolas",7),
+                 length=80,showvalue=False,command=self._update_ov_opacity).pack(side="left",padx=2)
+        self._ov_opacity_lbl=tk.Label(tbi,text=f"{self._ov_opacity.get():.0%}",bg=C,fg=A2,font=("Consolas",8))
+        self._ov_opacity_lbl.pack(side="left")
+
+    # ── THEME ──
+    def _change_theme(self,event=None):
+        import tkinter.messagebox as mb
+        name=self._theme_var.get()
+        self.cfg["ui_theme"]=name; save_cfg(self.cfg)
+        mb.showinfo("Theme Changed",f"Theme set to '{name}'\nRestart to apply.",parent=self)
+
+    # ── COLLAPSE TOGGLES ──
+    def _toggle_hk(self,e=None):
+        if self._hk_open.get(): self._hk_frame.pack_forget(); self._hk_open.set(False); self._hk_btn.config(text="▶ HOTKEYS  (click to expand)")
+        else: self._hk_frame.pack(fill="x",padx=20,pady=(0,6),after=self._hk_btn.master); self._hk_open.set(True); self._hk_btn.config(text="▼ HOTKEYS  (click to collapse)")
+
+    def _toggle_opts(self,e=None):
+        if self._op_open.get(): self._op_frame.pack_forget(); self._op_open.set(False); self._op_btn.config(text="▶ OPTIONS  (click to expand)")
+        else: self._op_frame.pack(fill="x",padx=20,pady=(0,6),after=self._op_btn.master); self._op_open.set(True); self._op_btn.config(text="▼ OPTIONS  (click to collapse)")
+
+    def _toggle_afk_sec(self,e=None):
+        if self._afk_sec_open.get(): self._afk_sec_frame.pack_forget(); self._afk_sec_open.set(False); self._afk_sec_btn.config(text="▶ ANTI-AFK  (click to expand)")
+        else: self._afk_sec_frame.pack(fill="x",padx=20,pady=(0,6),after=self._afk_sec_btn.master); self._afk_sec_open.set(True); self._afk_sec_btn.config(text="▼ ANTI-AFK  (click to collapse)")
+
+    def _toggle_setup(self,e=None):
+        if self._setup_open.get(): self._setup_frame.pack_forget(); self._setup_open.set(False); self._setup_toggle_btn.config(text="▶ SETUP  (click to expand)")
+        else: self._setup_frame.pack(fill="x",padx=20,pady=(0,6),after=self._setup_toggle_btn.master); self._setup_open.set(True); self._setup_toggle_btn.config(text="▼ SETUP  (click to collapse)")
+
+    # ── PIXEL PICKER ──
+    def _row(self,parent,label,key):
+        C,D,F,A=self.CARD,self.DIM,self.FG,self.ACC
+        r=tk.Frame(parent,bg=C); r.pack(fill="x",pady=2)
+        tk.Label(r,text=label,bg=C,fg=D,font=("Consolas",9),width=13,anchor="w").pack(side="left")
+        var=tk.StringVar(value=self.cfg.get(key,""))
+        self._vars[key]=var
+        lbl=tk.Label(r,textvariable=var,bg=self.ENT,fg=F,font=("Consolas",10),width=10,relief="flat",cursor="hand2",highlightthickness=1,highlightbackground="#2a2a35",highlightcolor=A)
+        lbl.pack(side="right"); lbl.bind("<Button-1>",lambda e,v=var,l=lbl,k=key:self._listen(v,l,k,e))
+
+    def _listen(self,var,lbl,key,event):
+        self._cancel(None); self._lv=var; self._ll=lbl; self._lk=key
+        lbl.config(fg=self.ACC2,highlightbackground=self.ACC2); var.set("Press a key...")
+        self._kh=keyboard.on_press(self._got_key,suppress=False); return "break"
+
+    def _got_key(self,event):
+        if not self._lv: return
+        km={f"f{i}":f"F{i}" for i in range(1,13)}
+        name=km.get(event.name.lower(),event.name)
+        self._lv.set(name); self.cfg[self._lk]=name
+        if self._ll: self._ll.config(fg=self.FG,highlightbackground="#2a2a35")
+        try: keyboard.unhook(self._kh)
+        except: pass
+        self._lv=self._ll=self._lk=None; self.after(100,self._rebind)
+
+    def _cancel(self,e):
+        if not self._lv: return
+        self._lv.set(self.cfg.get(self._lk,""))
+        if self._ll: self._ll.config(fg=self.FG,highlightbackground="#2a2a35")
+        try: keyboard.unhook(self._kh)
+        except: pass
+        self._lv=self._ll=self._lk=None
+
+    def _pick(self,key):
+        if self._picking: return
+        self._picking=True; self._pick_target=key
+        lbl=self._pix_labels[key]
+        self.attributes("-topmost",True)
+        self._status_line.config(text=f"Hover over target — capturing in 3s...")
+        lbl.config(text="3...",fg=self.ACC2)
+        self.after(1000,lambda:lbl.config(text="2..."))
+        self.after(2000,lambda:lbl.config(text="1..."))
+        self.after(3000,lambda:(self._do_pick(),self.attributes("-topmost",False)))
+
+    def _do_pick(self):
+        key=self._pick_target
+        x,y=pyautogui.position()
+        c=sample(x,y); b=bright(c)
+        if "_" in key:
+            self.cfg[f"{key}_x"]=x; self.cfg[f"{key}_y"]=y
+        else:
+            self.cfg[f"{key}x"]=x; self.cfg[f"{key}y"]=y
+        lbl=self._pix_labels[key]
+        lbl.config(text=f"({x},{y}) b={b}",fg=self.ACC)
+        self._log(f"Picked {key}: ({x},{y}) b={b}")
+        self._picking=False; self._pick_target=None
+
+    def _auto_thresh(self):
+        x,y=self.cfg.get("s1x",0),self.cfg.get("s1y",0)
+        if x==0: self._log("Pick Skill 1 first!"); return
+        b=bright(sample(x,y)); thresh=max(50,int(b*0.5))
+        self._thresh.set(str(thresh)); self.cfg["ready_thresh"]=thresh
+        self._log(f"Auto threshold: {thresh} (skill 1 b={b})")
+
+    def _gather(self):
+        s=dict(self.cfg)
+        for k,v in self._vars.items(): s[k]=v.get().strip()
+        s["use_m1"]=self._m1.get()
+        s["m1_speed"]=int(self._m1_speed.get())
+        s["use_m2"]=self._m2.get()
+        try: s["m2_cd"]=float(self._m2_cd.get())
+        except: s["m2_cd"]=5.0
+        s["auto_jump"]=self._jump.get()
+        s["auto_mode"]=self._automode.get()
+        s["auto_move"]=self._automove.get()
+        s["afk_aim"]=self._afkAim.get()
+        s["aim_power"]=int(self._aim_power.get())
+        s["hold_skills_base"]=self._hold_skills_base.get()
+        s["hold_time_base"]=self._hold_time_base.get()
+        s["hold_skills_mode"]=self._hold_skills_mode.get()
+        s["hold_time_mode"]=self._hold_time_mode.get()
+        s["anti_afk"]=self._anti_afk.get()
+        for k in ["afk_play","afk_chars_btn","afk_next","afk_char","afk_select"]:
+            s[f"{k}_x"]=self.cfg.get(f"{k}_x",0); s[f"{k}_y"]=self.cfg.get(f"{k}_y",0)
+        try: s["afk_char_page"]=int(self._afk_page.get())
+        except: s["afk_char_page"]=0
+        s["overlay_opacity"]=self._ov_opacity.get()
+        s["sounds_enabled"]=self._sounds.get()
+        s["combos"]=self._combos.get()
+        try: s["combo_delay"]=float(self._combo_delay.get())
+        except: s["combo_delay"]=0.5
+        try: s["skip_time"]=float(self._skip_time.get())
+        except: s["skip_time"]=7.0
+        try: s["ready_thresh"]=int(self._thresh.get())
+        except: pass
+        return s
+
+    def _save(self):
+        self.cfg=self._gather(); save_cfg(self.cfg)
+        self._log("Settings saved."); self._rebind()
+
+    def _toggle(self):
+        if self.eng.running:
+            self.eng.stop()
+            self._test_running=False
+        else: self.cfg=self._gather(); self.eng.cfg=self.cfg; self.eng.start(self.cfg)
+
+    def _rebind(self):
+        try: keyboard.unhook_all_hotkeys()
+        except: pass
+        time.sleep(0.05)
+        s=self._gather(); res=[]
+        for key,fn in [(s["start_key"],lambda:self.after(0,self._toggle)),(s["stop_key"],lambda:self.after(0,self.eng.stop)),(s["close_key"],lambda:os._exit(0))]:
+            try: keyboard.add_hotkey(key,fn,suppress=False); res.append(f"✓{key}")
+            except: res.append(f"✗{key}")
+        self._log("Keys: "+"  ".join(res))
+
+    def _log(self,msg):
+        self._log_lines.append(msg)
+        if len(self._log_lines)>500: self._log_lines=self._log_lines[-300:]
+        def _do():
+            self._status_line.config(text=msg[:80])
+            if self._log_panel_visible:
+                self._log_panel.config(state="normal")
+                self._log_panel.insert("end", msg+"\n")
+                self._log_panel.see("end")
+                self._log_panel.config(state="disabled")
+            if hasattr(self,"_overlay_action") and self._overlay and self._overlay.winfo_exists():
+                self._overlay_action.config(text=msg[:35])
+        self.after(0,_do)
+
+    def _toggle_log(self):
+        if self._log_panel_visible:
+            self._log_panel.pack_forget()
+            self._log_panel_visible=False
+            self._log_icon_open=False
+            self._draw_log_icon()
+        else:
+            self._log_panel.pack(fill="x",padx=20,pady=(0,6),after=self._btn.master.master)
+            self._log_panel_visible=True
+            self._log_icon_open=True
+            self._draw_log_icon()
+            self._log_panel.config(state="normal")
+            self._log_panel.delete("1.0","end")
+            for line in self._log_lines[-100:]:
+                self._log_panel.insert("end", line+"\n")
+            self._log_panel.see("end")
+            self._log_panel.config(state="disabled")
+
+    def _update_ov_opacity(self, val=None):
+        """Update overlay opacity in real-time."""
+        op = self._ov_opacity.get()
+        self._ov_opacity_lbl.config(text=f"{op:.0%}")
+        self.cfg["overlay_opacity"] = op
+        if hasattr(self,"_overlay") and self._overlay and self._overlay.winfo_exists():
+            self._overlay.attributes("-alpha", op)
+
+    def _toggle_overlay(self):
+        if hasattr(self,"_overlay") and self._overlay and self._overlay.winfo_exists():
+            self._overlay.destroy(); self._overlay=None
+            if hasattr(self,"_overlay_btn"): self._overlay_btn.config(bg=self.ACC)
+            return
+        B=self.BG; A=self.ACC; A2=self.ACC2; F=self.FG; D=self.DIM; C=self.CARD
+        ov_alpha = self.cfg.get("overlay_opacity", 0.88)
+        ov=tk.Toplevel(self)
+        ov.overrideredirect(True)
+        ov.attributes("-topmost",True)
+        ov.attributes("-alpha", ov_alpha)
+        ov.geometry("220x95+20+20")
+        ov.config(bg=B)
+        # Accent top border
+        tk.Frame(ov,bg=A,height=2).pack(fill="x")
+        # Drag
+        ov._drag={"x":0,"y":0}
+        def _start(e): ov._drag["x"]=e.x; ov._drag["y"]=e.y
+        def _drag(e): ov.geometry(f"+{ov.winfo_x()+e.x-ov._drag['x']}+{ov.winfo_y()+e.y-ov._drag['y']}")
+        # Title bar
+        top=tk.Frame(ov,bg=B); top.pack(fill="x",padx=6,pady=(3,0))
+        top.bind("<ButtonPress-1>",_start); top.bind("<B1-Motion>",_drag)
+        tk.Label(top,text="ABA MACRO  v6.6",bg=B,fg=D,font=("Consolas",7,"bold")).pack(side="left")
+        close=tk.Label(top,text="✕",bg=B,fg=D,font=("Consolas",9),cursor="hand2")
+        close.pack(side="right")
+        close.bind("<Button-1>",lambda e:self._toggle_overlay())
+        close.bind("<Enter>",lambda e:close.config(fg=A))
+        close.bind("<Leave>",lambda e:close.config(fg=D))
+        # Status row
+        mid=tk.Frame(ov,bg=B); mid.pack(fill="x",padx=8,pady=(4,1))
+        mid.bind("<ButtonPress-1>",_start); mid.bind("<B1-Motion>",_drag)
+        active=self.eng.running
+        col=A if active else D
+        self._overlay_dot=tk.Label(mid,text="●",bg=B,fg=col,font=("Consolas",18))
+        self._overlay_dot.pack(side="left",padx=(0,4))
+        self._overlay_lbl=tk.Label(mid,text="ACTIVE" if active else "OFFLINE",bg=B,fg=col,font=("Consolas",10,"bold"))
+        self._overlay_lbl.pack(side="left")
+        # Start/Stop button
+        def _ov_toggle():
+            if self.eng.running: self.eng.stop()
+            else: self.cfg=self._gather(); self.eng.cfg=self.cfg; self.eng.start(self.cfg)
+        self._overlay_toggle=tk.Button(mid,text="STOP" if active else "START",bg=A if not active else C,
+            fg="white",font=("Consolas",8,"bold"),relief="flat",padx=10,pady=2,cursor="hand2",
+            activebackground=A2,command=_ov_toggle)
+        self._overlay_toggle.pack(side="right")
+        # Last action row
+        bot=tk.Frame(ov,bg=B); bot.pack(fill="x",padx=8,pady=(0,3))
+        bot.bind("<ButtonPress-1>",_start); bot.bind("<B1-Motion>",_drag)
+        self._overlay_action=tk.Label(bot,text="—",bg=B,fg=D,font=("Consolas",7),anchor="w")
+        self._overlay_action.pack(side="left")
+        self._overlay=ov
+        if hasattr(self,"_overlay_btn"): self._overlay_btn.config(bg=A2)
+
+    def _test_afk_clicks(self):
+        """Test each Anti-AFK position — actually clicks each one. Stops if macro is stopped."""
+        self._test_running=True
+        def _run():
+            for i in range(5, 0, -1):
+                if not self._test_running: self._log("Test cancelled"); return
+                self._log(f"Test starting in {i}s — switch to Roblox!")
+                time.sleep(1.0)
+            import ctypes as _ct
+            class PT(_ct.Structure):
+                _fields_=[("x",_ct.c_long),("y",_ct.c_long)]
+            def _glide_t(x, y):
+                pt=PT(); _ct.windll.user32.GetCursorPos(_ct.byref(pt))
+                tdx=int(x)-pt.x; tdy=int(y)-pt.y; ax=ay=0.0
+                for i in range(1,46):
+                    t=i/45; e=t*t*(3-2*t); nx=tdx*e; ny=tdy*e
+                    dx=int(nx-ax); dy=int(ny-ay)
+                    if dx or dy: _ct.windll.user32.mouse_event(0x0001,dx,dy,0,0)
+                    ax=nx; ay=ny; time.sleep(0.011)
+                pt2=PT(); _ct.windll.user32.GetCursorPos(_ct.byref(pt2))
+                fx=int(x)-pt2.x; fy=int(y)-pt2.y
+                if fx or fy: _ct.windll.user32.mouse_event(0x0001,fx,fy,0,0); time.sleep(0.01)
+                # Jitter to register hover
+                _ct.windll.user32.mouse_event(0x0001, 1, 0, 0, 0); time.sleep(0.008)
+                _ct.windll.user32.mouse_event(0x0001, -1, 0, 0, 0)
+            def _click_t(x, y):
+                _ct.windll.user32.SetCursorPos(int(x), int(y)-80); time.sleep(0.2)
+                _glide_t(x, y); time.sleep(0.15)
+                # Wiggle to reinforce hover
+                for _ in range(3):
+                    _ct.windll.user32.mouse_event(0x0001, 2, 0, 0, 0); time.sleep(0.02)
+                    _ct.windll.user32.mouse_event(0x0001, -2, 0, 0, 0); time.sleep(0.02)
+                time.sleep(0.1)
+                class _MI(_ct.Structure):
+                    _fields_=[("dx",_ct.c_long),("dy",_ct.c_long),("mouseData",_ct.c_ulong),
+                              ("dwFlags",_ct.c_ulong),("time",_ct.c_ulong),("dwExtraInfo",_ct.POINTER(_ct.c_ulong))]
+                class _INP(_ct.Structure):
+                    _fields_=[("type",_ct.c_ulong),("mi",_MI)]
+                _ct.windll.user32.SendInput(1,_ct.byref(_INP(0,_MI(0,0,0,0x0002,0,None))),_ct.sizeof(_INP))
+                time.sleep(0.12)
+                _ct.windll.user32.SendInput(1,_ct.byref(_INP(0,_MI(0,0,0,0x0004,0,None))),_ct.sizeof(_INP))
+            steps = [("afk_play","PLAY"),("afk_chars_btn","CHARACTERS"),("afk_next","NEXT"),
+                     ("afk_char","CHARACTER"),("afk_select","SELECT")]
+            for key, name in steps:
+                if not self._test_running: self._log("Test cancelled"); return
+                x=self.cfg.get(f"{key}_x",0); y=self.cfg.get(f"{key}_y",0)
+                if x==0:
+                    self._log(f"Test: {name} — not set, skipping"); time.sleep(1.0); continue
+                self._log(f"Test: clicking {name} ({x},{y})...")
+                _click_t(x, y)
+                time.sleep(3.0)
+            self._log("Test complete!")
+            self._test_running=False
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _export_cfg(self):
+        """Export settings to a file."""
+        import tkinter.filedialog as fd
+        path = fd.asksaveasfilename(
+            parent=self, title="Export Settings",
+            defaultextension=".json", filetypes=[("JSON files","*.json")],
+            initialfile="aba_settings_export.json"
+        )
+        if not path: return
+        try:
+            s = self._gather()
+            with open(path, "w") as f:
+                json.dump(s, f, indent=2)
+            self._log(f"Exported to {os.path.basename(path)}")
+        except Exception as e:
+            self._log(f"Export failed: {e}")
+
+    def _import_cfg(self):
+        """Import settings from a file."""
+        import tkinter.filedialog as fd, tkinter.messagebox as mb
+        path = fd.askopenfilename(
+            parent=self, title="Import Settings",
+            filetypes=[("JSON files","*.json")]
+        )
+        if not path: return
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            self.cfg.update(d)
+            save_cfg(self.cfg)
+            mb.showinfo("Import Done", "Settings imported!\nRestart to apply all changes.", parent=self)
+            self._log(f"Imported from {os.path.basename(path)}")
+        except Exception as e:
+            self._log(f"Import failed: {e}")
+
+    def _tick_session(self):
+        """Update session timer every second."""
+        if self.eng.running and self._session_start:
+            elapsed = int(time.time() - self._session_start)
+            m, s = divmod(elapsed, 60)
+            h, m = divmod(m, 60)
+            if h > 0:
+                self._session_lbl.config(text=f"⏱ {h}:{m:02d}:{s:02d}")
+            else:
+                self._session_lbl.config(text=f"⏱ {m}:{s:02d}")
+        else:
+            self._session_lbl.config(text="")
+        self.after(1000, self._tick_session)
+
+    def _set_status(self,active):
+        def _do():
+            if active:
+                self._dot.config(fg="#e8384f"); self._slbl.config(fg=self.FG,text="  ACTIVE"); self._btn.config(text="STOP",bg="#333340")
+                if not self._session_start: self._session_start = time.time()
+            else:
+                self._dot.config(fg="#2a2a35"); self._slbl.config(fg=self.DIM,text="  OFFLINE"); self._btn.config(text="START",bg=self.ACC)
+                self._session_start = None
+            if hasattr(self,"_overlay") and self._overlay and self._overlay.winfo_exists():
+                col=self.ACC if active else self.DIM
+                self._overlay_dot.config(fg=col)
+                self._overlay_lbl.config(text="ACTIVE" if active else "OFFLINE",fg=col)
+                self._overlay_toggle.config(text="STOP" if active else "START",
+                    bg=self.CARD if active else self.ACC)
+        self.after(0,_do)
+
+    def _close(self):
+        self.eng.stop(); save_cfg(self._gather()); self.destroy(); sys.exit(0)
+
+if __name__=="__main__":
+    App().mainloop()
